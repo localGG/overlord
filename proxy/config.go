@@ -69,6 +69,23 @@ type ClusterConfig struct {
 	PingFailLimit    int             `toml:"ping_fail_limit"`
 	PingAutoEject    bool            `toml:"ping_auto_eject"`
 	Servers          []string        `toml:"servers"`
+	Route            *Route          `toml:"route"`
+}
+
+// Pool config
+type Pool struct {
+	Server []string `toml:"servers"`
+	Type   string   `toml:"type"` // pool event type. maybe AllAsync|AllSync
+}
+
+// Route config
+type Route struct {
+	Type  string `toml:"type"` // route type ,maybe WarnUp|TwoLevel|Broadcast
+	Pool  *Pool  `toml:"pool"`
+	Pools struct {
+		Pool []*Pool `toml:"pool"`
+		Type string  `toml:"type"` // pool event type. maybe AllAsync|AllSync
+	} `toml:"pools"`
 }
 
 // Validate validate config field value.

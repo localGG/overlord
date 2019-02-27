@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	errs "errors"
+	"overlord/proxy/proto"
 	"sync"
 	"unsafe"
 )
@@ -24,6 +25,8 @@ var (
 	cmdExistsBytes = []byte("6\r\nEXISTS")
 
 	reqSupportCmdMap = map[string]struct{}{}
+	reqReadCmdMap    = map[string]struct{}{}
+	reqWriteCmdMap   = map[string]struct{}{}
 	reqControlCmdMap = map[string]struct{}{}
 )
 
@@ -35,6 +38,12 @@ func init() {
 	}
 	for _, key := range controlCmds {
 		reqControlCmdMap[key] = struct{}{}
+	}
+	for _, key := range readCmds {
+		reqReadCmdMap[key] = struct{}{}
+	}
+	for _, key := range writeCmds {
+		reqWriteCmdMap[key] = struct{}{}
 	}
 }
 
@@ -161,6 +170,20 @@ func (r *Request) IsCtl() bool {
 	key := *((*string)(unsafe.Pointer(&r.resp.array[0].data)))
 	_, ok := reqControlCmdMap[key]
 	return ok
+}
+
+// IsRead is read command.
+func (r *Request) ReqType() proto.ReqType {
+	key := *((*string)(unsafe.Pointer(&r.resp.array[0].data)))
+	_, ok := reqReadCmdMap[key]
+	if ok {
+		return proto.ReqRead
+	}
+	return proto.ReqWrite
+}
+
+func (r *Request) Err() error {
+	return r.reply.Err()
 }
 
 var (

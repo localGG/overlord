@@ -3,6 +3,7 @@ package binary
 import (
 	errs "errors"
 	"fmt"
+	"overlord/proxy/proto"
 	"sync"
 )
 
@@ -325,4 +326,12 @@ func (r *MCRequest) Key() []byte {
 
 func (r *MCRequest) String() string {
 	return fmt.Sprintf("type:%s key:%s data:%s", r.rTp.String(), r.key, r.data)
+}
+
+func (r *MCRequest) ReqType() proto.ReqType {
+	if r.rTp == RequestTypeGat || r.rTp == RequestTypeGetQ ||
+		r.rTp == RequestTypeGet || r.rTp == RequestTypeGetK || r.rTp == RequestTypeGetKQ {
+		return proto.ReqRead
+	}
+	return proto.ReqWrite
 }

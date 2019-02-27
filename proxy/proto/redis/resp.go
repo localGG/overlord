@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"fmt"
+	"overlord/proxy/proto"
 	"strconv"
 
 	"overlord/pkg/bufio"
@@ -55,6 +56,10 @@ func (r *RESP) Decode(br *bufio.Reader) (err error) {
 	return r.decode(br)
 }
 
+func (r *RESP) Err() error {
+	return r.err
+}
+
 // Encode encode into Writer.
 func (r *RESP) Encode(w *bufio.Writer) (err error) {
 	return r.encode(w)
@@ -69,6 +74,7 @@ type resp struct {
 	array []*resp
 	// in order to reuse array.use arrayn to mark current obj.
 	arrayn int
+	err    error
 }
 
 func (r *resp) reset() {
@@ -154,6 +160,7 @@ func (r *resp) decodeBulk(line []byte, br *bufio.Reader) (err error) {
 	}
 	if size == -1 {
 		r.data = r.data[:0]
+		r.err = proto.ErrKeyNotFound
 		return
 	}
 	br.Advance(-(ls - 1))

@@ -3,6 +3,7 @@ package memcache
 import (
 	errs "errors"
 	"fmt"
+	"overlord/proxy/proto"
 	"sync"
 )
 
@@ -206,6 +207,7 @@ type MCRequest struct {
 	rTp  RequestType
 	key  []byte
 	data []byte
+	err  error
 }
 
 var msgPool = &sync.Pool{
@@ -249,4 +251,17 @@ func (r *MCRequest) Key() []byte {
 
 func (r *MCRequest) String() string {
 	return fmt.Sprintf("type:%s key:%s data:%s", r.rTp.Bytes(), r.key, r.data)
+}
+
+func (r *MCRequest) ReqType() proto.ReqType {
+	if r.rTp == RequestTypeGet || r.rTp == RequestTypeGets ||
+		r.rTp == RequestTypeCas || r.rTp == RequestTypeGat ||
+		r.rTp == RequestTypeGats {
+		return proto.ReqRead
+	}
+	return proto.ReqWrite
+}
+
+func (r *MCRequest) Err() error {
+	return r.err
 }

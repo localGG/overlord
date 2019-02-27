@@ -97,8 +97,13 @@ REREAD:
 		err = errors.WithStack(err)
 		return
 	}
-	if _, ok := withValueTypes[mcr.rTp]; !ok || bytes.Equal(bs, endBytes) || bytes.Equal(bs, errorBytes) {
+	if _, ok := withValueTypes[mcr.rTp]; !ok || bytes.Equal(bs, errorBytes) {
 		mcr.data = append(mcr.data, bs...)
+		return
+	}
+	if bytes.Equal(bs, endBytes) {
+		mcr.data = append(mcr.data, bs...)
+		mcr.err = proto.ErrKeyNotFound
 		return
 	}
 	var length int

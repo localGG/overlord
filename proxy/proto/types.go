@@ -1,11 +1,37 @@
 package proto
 
+import "errors"
+
+// ReqType request type
+type ReqType int8
+
+// Request type
+const (
+	ReqRead ReqType = iota
+	ReqWrite
+)
+
+// Route handlers
+const (
+	AllAsynsRoute = "AllAsync"
+	AllSync       = "AllSync"
+)
+
+// Route type
+const ()
+
+// response error
+var (
+	ErrKeyNotFound = errors.New("key not found")
+)
+
 // Request request interface.
 type Request interface {
 	CmdString() string
 	Cmd() []byte
 	Key() []byte
 	Put()
+	ReqType() ReqType
 }
 
 // ProxyConn decode bytes from client and encode write to conn.
