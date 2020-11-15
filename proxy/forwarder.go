@@ -55,7 +55,7 @@ func NewForwarder(cc *ClusterConfig) proto.Forwarder {
 		dto := time.Duration(cc.DialTimeout) * time.Millisecond
 		rto := time.Duration(cc.ReadTimeout) * time.Millisecond
 		wto := time.Duration(cc.WriteTimeout) * time.Millisecond
-		return rclstr.NewForwarder(cc.Name, cc.ListenAddr, cc.Servers, cc.NodeConnections, dto, rto, wto, []byte(cc.HashTag))
+		return rclstr.NewForwarder(cc.Name, cc.ListenAddr, cc.Servers, cc.NodeConnections, cc.NodePipeCount, dto, rto, wto, []byte(cc.HashTag))
 	}
 	panic("unsupported protocol")
 }
@@ -95,15 +95,21 @@ func (f *defaultForwarder) Forward(msgs []*proto.Message) error {
 	}
 	for _, m := range msgs {
 		if m.IsBatch() {
+			ctxMap := make(map[string]*nodeConnPipeContext)
 			for _, subm := range m.Batch() {
 				key := subm.Request().Key()
-				ncp, ok := conns.getPipes(f.trimHashTag(key))
+				ctx, ok := conns.getPipesContext(f.trimHashTag(key))
 				if !ok {
 					m.WithError(ErrForwarderHashNoNode)
 					return errors.WithStack(ErrForwarderHashNoNode)
 				}
-				ncp.Push(subm)
+				if _, ok = ctxMap[ctx.identifier]; !ok {
+					ctxMap[ctx.identifier] = ctx
+				}
+				ctxMap[ctx.identifier].msgs = append(ctxMap[ctx.identifier].msgs, subm)
+				subm.MarkStartPipe()
 			}
+			f.batchPush(ctxMap)
 		} else {
 			key := m.Request().Key()
 			ncp, ok := conns.getPipes(f.trimHashTag(key))
@@ -111,6 +117,7 @@ func (f *defaultForwarder) Forward(msgs []*proto.Message) error {
 				m.WithError(ErrForwarderHashNoNode)
 				return errors.WithStack(ErrForwarderHashNoNode)
 			}
+			m.MarkStartPipe()
 			ncp.Push(m)
 		}
 	}
@@ -157,6 +164,21 @@ func (f *defaultForwarder) Close() error {
 		return nil
 	}
 	return nil
+}
+
+func (f *defaultForwarder) batchPush(ctxMap map[string]*nodeConnPipeContext) {
+	for _, ctx := range ctxMap {
+		mainMsg := ctx.msgs[0]
+		var reqs []proto.Request
+		for i := 1; i < len(ctx.msgs); i++ {
+			reqs = append(reqs, ctx.msgs[i].Request())
+		}
+		if err := mainMsg.Request().Merge(reqs); err != nil {
+			// todo report error
+		}
+
+		ctx.ncp.Push(mainMsg)
+	}
 }
 
 func (f *defaultForwarder) trimHashTag(key []byte) []byte {
@@ -219,12 +241,18 @@ func (c *connections) init(addrs, ans []string, ws []int, alias bool, oldNcps ma
 			c.nodePipe[toAddr] = cnn
 			copyed[toAddr] = true
 		} else {
-			c.nodePipe[toAddr] = proto.NewNodeConnPipe(c.cc.NodeConnections, func() proto.NodeConn {
+			c.nodePipe[toAddr] = proto.NewNodeConnPipe(c.cc.NodeConnections, c.cc.NodePipeCount, func() proto.NodeConn {
 				return newNodeConn(c.cc, toAddr)
 			})
 		}
 	}
 	return copyed
+}
+
+type nodeConnPipeContext struct {
+	identifier string
+	ncp        *proto.NodeConnPipe
+	msgs       []*proto.Message
 }
 
 func (c *connections) getPipes(key []byte) (ncp *proto.NodeConnPipe, ok bool) {
@@ -238,6 +266,27 @@ func (c *connections) getPipes(key []byte) (ncp *proto.NodeConnPipe, ok bool) {
 		}
 	}
 	ncp, ok = c.nodePipe[addr]
+	return
+}
+
+func (c *connections) getPipesContext(key []byte) (ctx *nodeConnPipeContext, ok bool) {
+	var addr string
+	if addr, ok = c.ring.GetNode(key); !ok {
+		return
+	}
+	if c.alias {
+		if addr, ok = c.aliasMap[addr]; !ok {
+			return
+		}
+	}
+	ncp, ok := c.nodePipe[addr]
+	if !ok {
+		return
+	}
+	ctx = &nodeConnPipeContext{
+		identifier: addr,
+		ncp:        ncp,
+	}
 	return
 }
 
@@ -292,7 +341,6 @@ func (c *connections) processPing(p *pinger) {
 				if prom.On {
 					prom.ErrIncr(c.cc.Name, p.addr, "ping", "network err")
 				}
-				p.ping = newPingConn(p.cc, p.addr)
 			}
 
 			p.failure++
@@ -301,6 +349,7 @@ func (c *connections) processPing(p *pinger) {
 			}
 			if p.failure < c.cc.PingFailLimit {
 				time.Sleep(pingSleepTime(false))
+				p.ping = newPingConn(p.cc, p.addr)
 				continue
 			}
 			if !del {
@@ -316,6 +365,7 @@ func (c *connections) processPing(p *pinger) {
 				log.Errorf("ping node:%s addr:%s fail times:%d ge to limit:%d and already deled", p.alias, p.addr, p.failure, c.cc.PingFailLimit)
 			}
 			time.Sleep(pingSleepTime(true))
+			p.ping = newPingConn(p.cc, p.addr)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	errs "errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"overlord/pkg/types"
@@ -22,6 +23,7 @@ var (
 	cmdPingBytes   = []byte("4\r\nPING")
 	cmdMSetBytes   = []byte("4\r\nMSET")
 	cmdMGetBytes   = []byte("4\r\nMGET")
+	cmdSetBytes    = []byte("3\r\nSET")
 	cmdGetBytes    = []byte("3\r\nGET")
 	cmdDelBytes    = []byte("3\r\nDEL")
 	cmdExistsBytes = []byte("6\r\nEXISTS")
@@ -43,9 +45,11 @@ func init() {
 
 // errors
 var (
-	ErrBadAssert  = errs.New("bad assert for redis")
-	ErrBadCount   = errs.New("bad count number")
-	ErrBadRequest = errs.New("bad request")
+	ErrBadAssert       = errs.New("bad assert for redis")
+	ErrBadCount        = errs.New("bad count number")
+	ErrBadRequest      = errs.New("bad request")
+	ErrWrongParamCount = errs.New("wrong param count")
+	ErrIgnoreMerged    = errs.New("ignore merged request")
 )
 
 // mergeType is used to decript the merge operation.
@@ -61,9 +65,11 @@ const (
 
 // Request is the type of a complete redis command
 type Request struct {
-	resp  *resp
-	reply *resp
-	mType mergeType
+	resp         *resp
+	reply        *resp
+	mType        mergeType
+	merged       bool
+	batchOpCount int
 }
 
 var reqPool = &sync.Pool{
@@ -81,13 +87,14 @@ func newReq() *Request {
 	r := &Request{}
 	r.resp = &resp{}
 	r.reply = &resp{}
+	r.merged = false
 	return r
 }
 
 // Slowlog impl the Slowlogger interface
 func (r *Request) Slowlog() *proto.SlowlogEntry {
 	slog := proto.NewSlowlogEntry(types.CacheTypeRedis)
-	if r.resp.arrayn == 0 {
+	if r.resp.arraySize == 0 {
 		slog.Cmd = []string{string(proto.CollapseBody(r.resp.data))}
 	}
 	slog.Cmd = collapseArray(r.resp.Array())
@@ -101,12 +108,12 @@ func (r *Request) CmdString() string {
 
 // Cmd get the cmd
 func (r *Request) Cmd() []byte {
-	if r.resp.arrayn < 1 {
+	if r.resp.arraySize < 1 {
 		return emptyBytes
 	}
 	cmd := r.resp.array[0]
 	var pos int
-	if cmd.rTp == respBulk {
+	if cmd.respType == respBulk {
 		pos = bytes.Index(cmd.data, crlfBytes) + 2
 	}
 	return cmd.data[pos:]
@@ -114,17 +121,17 @@ func (r *Request) Cmd() []byte {
 
 // Key impl the proto.protoRequest and get the Key of redis
 func (r *Request) Key() []byte {
-	if r.resp.arrayn < 1 {
+	if r.resp.arraySize < 1 {
 		return emptyBytes
 	}
-	if r.resp.arrayn == 1 {
+	if r.resp.arraySize == 1 {
 		return r.resp.array[0].data
 	}
 
 	k := r.resp.array[1]
 	// SUPPORT EVAL command
 	const evalArgsMinCount int = 4
-	if r.resp.arrayn >= evalArgsMinCount {
+	if r.resp.arraySize >= evalArgsMinCount {
 		if bytes.Equal(r.resp.array[0].data, cmdEvalBytes) {
 			// find the 4th key with index 3
 			k = r.resp.array[3]
@@ -132,7 +139,7 @@ func (r *Request) Key() []byte {
 	}
 
 	var pos int
-	if k.rTp == respBulk {
+	if k.respType == respBulk {
 		pos = bytes.Index(k.data, crlfBytes) + 2
 	}
 	return k.data[pos:]
@@ -143,7 +150,25 @@ func (r *Request) Put() {
 	r.resp.reset()
 	r.reply.reset()
 	r.mType = mergeTypeNo
+	r.merged = false
+	r.batchOpCount = 0
 	reqPool.Put(r)
+}
+
+func (r *Request) Merge(reqs []proto.Request) (err error) {
+	for i := range reqs {
+		req := reqs[i].(*Request)
+		if (req.resp.arraySize-1)%r.batchOpCount != 0 {
+			return ErrWrongParamCount
+		}
+		req.merged = true
+		for i := 1; i < req.resp.arraySize; i++ {
+			nr := r.resp.next()
+			nr.copy(req.resp.array[i])
+		}
+	}
+	r.resp.data = []byte(strconv.Itoa(r.resp.arraySize))
+	return
 }
 
 // RESP return request resp.
@@ -161,7 +186,7 @@ func (r *Request) Reply() *RESP {
 // NOTE: use string([]byte) as a map key, it is very specific!!!
 // https://dave.cheney.net/high-performance-go-workshop/dotgo-paris.html#using_byte_as_a_map_key
 func (r *Request) IsSupport() bool {
-	if r.resp.arrayn < 1 {
+	if r.resp.arraySize < 1 {
 		return false
 	}
 	_, ok := reqSupportCmdMap[string(r.resp.array[0].data)]
@@ -173,7 +198,7 @@ func (r *Request) IsSupport() bool {
 // NOTE: use string([]byte) as a map key, it is very specific!!!
 // https://dave.cheney.net/high-performance-go-workshop/dotgo-paris.html#using_byte_as_a_map_key
 func (r *Request) IsCtl() bool {
-	if r.resp.arrayn < 1 {
+	if r.resp.arraySize < 1 {
 		return false
 	}
 	_, ok := reqControlCmdMap[string(r.resp.array[0].data)]
@@ -307,13 +332,13 @@ var (
 		"5\r\nPFADD",
 		"7\r\nPFMERGE",
 		"4\r\nEVAL",
+		"11\r\nSUNIONSTORE",
+		"11\r\nZUNIONSTORE",
 	}
 	notSupportCmds = []string{
 		"6\r\nMSETNX",
 		"10\r\nSDIFFSTORE",
 		"11\r\nSINTERSTORE",
-		"11\r\nSUNIONSTORE",
-		"11\r\nZUNIONSTORE",
 		"5\r\nBLPOP",
 		"5\r\nBRPOP",
 		"10\r\nBRPOPLPUSH",

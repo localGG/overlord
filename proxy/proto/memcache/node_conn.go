@@ -16,7 +16,7 @@ const (
 	opened = int32(0)
 	closed = int32(1)
 
-	nodeReadBufSize = 512 * 1024 // NOTE: 2MB
+	nodeReadBufSize = 2 * 1024 * 1024 // NOTE: 2MB
 )
 
 type nodeConn struct {
@@ -66,9 +66,12 @@ func (n *nodeConn) Write(m *proto.Message) (err error) {
 		err = errors.WithStack(ErrAssertReq)
 		return
 	}
-	_ = n.bw.Write(mcr.rTp.Bytes())
+	if mcr.respType == RequestTypeQuit || mcr.respType == RequestTypeVersion {
+		return
+	}
+	_ = n.bw.Write(mcr.respType.Bytes())
 	_ = n.bw.Write(spaceBytes)
-	if mcr.rTp == RequestTypeGat || mcr.rTp == RequestTypeGats {
+	if mcr.respType == RequestTypeGat || mcr.respType == RequestTypeGats {
 		_ = n.bw.Write(mcr.data) // NOTE: exp time
 		_ = n.bw.Write(spaceBytes)
 		_ = n.bw.Write(mcr.key)
@@ -97,6 +100,10 @@ func (n *nodeConn) Read(m *proto.Message) (err error) {
 		err = errors.WithStack(ErrAssertReq)
 		return
 	}
+	if mcr.respType == RequestTypeQuit || mcr.respType == RequestTypeSetNoreply || mcr.respType == RequestTypeVersion {
+		return
+	}
+
 	mcr.data = mcr.data[:0]
 REREAD:
 	var bs []byte
@@ -110,12 +117,13 @@ REREAD:
 		err = errors.WithStack(err)
 		return
 	}
-	if _, ok := withValueTypes[mcr.rTp]; !ok || bytes.Equal(bs, endBytes) || bytes.Equal(bs, errorBytes) {
+	if _, ok := withValueTypes[mcr.respType]; !ok || bytes.Equal(bs, endBytes) || bytes.Equal(bs, errorBytes) {
 		mcr.data = append(mcr.data, bs...)
 		return
 	}
 	var length int
-	if length, err = findLength(bs, mcr.rTp == RequestTypeGets || mcr.rTp == RequestTypeGats); err != nil {
+
+	if length, err = parseLen(bs, 4); err != nil {
 		err = errors.WithStack(err)
 		return
 	}

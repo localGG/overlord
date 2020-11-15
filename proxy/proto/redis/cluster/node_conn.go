@@ -89,7 +89,12 @@ func (nc *nodeConn) Read(m *proto.Message) (err error) {
 	if !bytes.HasPrefix(data, askBytes) && !bytes.HasPrefix(data, movedBytes) {
 		return
 	}
+
 	addrBs, _, isAsk, _ := parseRedirect(data)
+	if !isAsk {
+		// tryFetch when key moved
+		nc.c.toFetch()
+	}
 	nc.sb.Reset()
 	nc.sb.Write(addrBs)
 	addr := nc.sb.String()

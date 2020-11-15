@@ -71,7 +71,7 @@ func NewHandler(p *Proxy, cc *ClusterConfig, conn net.Conn, forwarder proto.Forw
 	case types.CacheTypeMemcacheBinary:
 		h.pc = mcbin.NewProxyConn(h.conn)
 	case types.CacheTypeRedis:
-		h.pc = redis.NewProxyConn(h.conn)
+		h.pc = redis.NewProxyConn(h.conn, true)
 	case types.CacheTypeRedisCluster:
 		h.pc = rclstr.NewProxyConn(h.conn, forwarder)
 	default:
@@ -106,6 +106,7 @@ func (h *Handler) handle() {
 		wg.Wait()
 		// 3. encode
 		for _, msg := range msgs {
+			msg.MarkEndPipe()
 			if err = h.pc.Encode(msg); err != nil {
 				h.pc.Flush()
 				h.deferHandle(messages, err)
@@ -120,7 +121,6 @@ func (h *Handler) handle() {
 			h.deferHandle(messages, err)
 			return
 		}
-
 
 		// 4. check slowlog before release resource
 		if h.slowerThan != 0 {
@@ -142,10 +142,10 @@ func (h *Handler) handle() {
 
 func (h *Handler) allocMaxConcurrent(wg *sync.WaitGroup, msgs []*proto.Message, lastCount int) []*proto.Message {
 	var alloc int
-	if lm := len(msgs); lm == 0 {
+	if msgsLength := len(msgs); msgsLength == 0 {
 		alloc = concurrent
-	} else if lm < maxConcurrent && lm == lastCount {
-		alloc = lm * concurrent
+	} else if msgsLength < maxConcurrent && msgsLength == lastCount {
+		alloc = msgsLength * concurrent
 	}
 	if alloc > 0 {
 		proto.PutMsgs(msgs)
@@ -168,6 +168,9 @@ func (h *Handler) closeWithError(err error) {
 		h.err = err
 		_ = h.conn.Close()
 		atomic.AddInt32(&h.p.conns, -1) // NOTE: decr!!!
+		if err == proto.ErrQuit {
+			return
+		}
 		if prom.On {
 			prom.ConnDecr(h.cc.Name)
 		}

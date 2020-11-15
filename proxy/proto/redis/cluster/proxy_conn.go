@@ -3,7 +3,6 @@ package cluster
 import (
 	"bytes"
 	errs "errors"
-
 	"overlord/pkg/conv"
 	libnet "overlord/pkg/net"
 	"overlord/proxy/proto"
@@ -37,7 +36,7 @@ func NewProxyConn(conn *libnet.Conn, fer proto.Forwarder) proto.ProxyConn {
 	}
 	r := &proxyConn{
 		c:  c,
-		pc: redis.NewProxyConn(conn),
+		pc: redis.NewProxyConn(conn, false),
 	}
 	return r
 }

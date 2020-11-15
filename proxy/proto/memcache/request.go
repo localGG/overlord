@@ -13,28 +13,32 @@ const (
 )
 
 var (
-	spaceBytes = []byte{' '}
-	zeroBytes  = []byte{'0'}
-	oneBytes   = []byte{'1'}
-	crlfBytes  = []byte("\r\n")
-	endBytes   = []byte("END\r\n")
-	errorBytes = []byte("ERROR\r\n")
+	spaceBytes   = []byte{' '}
+	zeroBytes    = []byte{'0'}
+	oneBytes     = []byte{'1'}
+	crlfBytes    = []byte("\r\n")
+	noreplyBytes = []byte("noreply")
+	endBytes     = []byte("END\r\n")
+	errorBytes   = []byte("ERROR\r\n")
 
-	setBytes     = []byte("set")
-	addBytes     = []byte("add")
-	replaceBytes = []byte("replace")
-	appendBytes  = []byte("append")
-	prependBytes = []byte("prepend")
-	casBytes     = []byte("cas")
-	getBytes     = []byte("get")
-	getsBytes    = []byte("gets")
-	deleteBytes  = []byte("delete")
-	incrBytes    = []byte("incr")
-	decrBytes    = []byte("decr")
-	touchBytes   = []byte("touch")
-	gatBytes     = []byte("gat")
-	gatsBytes    = []byte("gats")
-	unknownBytes = []byte("unknown")
+	setBytes        = []byte("set")
+	addBytes        = []byte("add")
+	replaceBytes    = []byte("replace")
+	appendBytes     = []byte("append")
+	prependBytes    = []byte("prepend")
+	casBytes        = []byte("cas")
+	getBytes        = []byte("get")
+	getsBytes       = []byte("gets")
+	deleteBytes     = []byte("delete")
+	incrBytes       = []byte("incr")
+	decrBytes       = []byte("decr")
+	touchBytes      = []byte("touch")
+	gatBytes        = []byte("gat")
+	gatsBytes       = []byte("gats")
+	quitBytes       = []byte("quit")
+	setNoreplyBytes = []byte("set")
+	versionBytes    = []byte("version")
+	unknownBytes    = []byte("unknown")
 	// storedBytes = []byte("STORED\r\n")
 	// notStoredBytes = []byte("NOT_STORED\r\n")
 	// existsBytes    = []byte("EXISTS\r\n")
@@ -44,21 +48,24 @@ var (
 )
 
 const (
-	setString     = "set"
-	addString     = "add"
-	replaceString = "replace"
-	appendString  = "append"
-	prependString = "prepend"
-	casString     = "cas"
-	getString     = "get"
-	getsString    = "gets"
-	deleteString  = "delete"
-	incrString    = "incr"
-	decrString    = "decr"
-	touchString   = "touch"
-	gatString     = "gat"
-	gatsString    = "gats"
-	unknownString = "unknown"
+	setString        = "set"
+	addString        = "add"
+	replaceString    = "replace"
+	appendString     = "append"
+	prependString    = "prepend"
+	casString        = "cas"
+	getString        = "get"
+	getsString       = "gets"
+	deleteString     = "delete"
+	incrString       = "incr"
+	decrString       = "decr"
+	touchString      = "touch"
+	gatString        = "gat"
+	gatsString       = "gats"
+	quitString       = "quit"
+	versionString    = "version"
+	setNoreplyString = "set"
+	unknownString    = "unknown"
 )
 
 // RequestType is the protocol-agnostic identifier for the command
@@ -94,6 +101,12 @@ func (rt RequestType) String() string {
 		return gatString
 	case RequestTypeGats:
 		return gatsString
+	case RequestTypeQuit:
+		return quitString
+	case RequestTypeSetNoreply:
+		return setNoreplyString
+	case RequestTypeVersion:
+		return versionString
 	}
 	return unknownString
 }
@@ -129,7 +142,14 @@ func (rt RequestType) Bytes() []byte {
 		return gatBytes
 	case RequestTypeGats:
 		return gatsBytes
+	case RequestTypeQuit:
+		return quitBytes
+	case RequestTypeSetNoreply:
+		return setNoreplyBytes
+	case RequestTypeVersion:
+		return versionBytes
 	}
+
 	return unknownBytes
 }
 
@@ -150,6 +170,9 @@ const (
 	RequestTypeTouch
 	RequestTypeGat
 	RequestTypeGats
+	RequestTypeQuit
+	RequestTypeSetNoreply
+	RequestTypeVersion
 )
 
 var (
@@ -205,9 +228,9 @@ var (
 // Get And Touch:
 // 	gat|gats <exptime> <key>*\r\n
 type MCRequest struct {
-	rTp  RequestType
-	key  []byte
-	data []byte
+	respType RequestType
+	key      []byte
+	data     []byte
 }
 
 var msgPool = &sync.Pool{
@@ -228,7 +251,7 @@ func NewReq() *MCRequest {
 
 // Put put req back to pool.
 func (r *MCRequest) Put() {
-	r.rTp = RequestTypeUnknown
+	r.respType = RequestTypeUnknown
 	r.key = r.key[:0]
 	r.data = r.data[:0]
 	msgPool.Put(r)
@@ -236,12 +259,12 @@ func (r *MCRequest) Put() {
 
 // CmdString will return string of cmd for prom report
 func (r *MCRequest) CmdString() string {
-	return r.rTp.String()
+	return r.respType.String()
 }
 
 // Cmd get Msg cmd.
 func (r *MCRequest) Cmd() []byte {
-	return r.rTp.Bytes()
+	return r.respType.Bytes()
 }
 
 // Key get Msg key.
@@ -249,17 +272,21 @@ func (r *MCRequest) Key() []byte {
 	return r.key
 }
 
+func (r *MCRequest) Merge([]proto.Request) (err error) {
+	return
+}
+
 func (r *MCRequest) String() string {
-	return fmt.Sprintf("type:%s key:%s data:%s", r.rTp.Bytes(), r.key, r.data)
+	return fmt.Sprintf("type:%s key:%s data:%s", r.respType.Bytes(), r.key, r.data)
 }
 
 // Slowlog record the slowlog entry
 func (r *MCRequest) Slowlog() (slog *proto.SlowlogEntry) {
 	slog = proto.NewSlowlogEntry(types.CacheTypeMemcache)
-	if r.rTp == RequestTypeGat || r.rTp == RequestTypeGats {
-		slog.Cmd = []string{r.rTp.String(), string(r.data), string(r.key), string(crlfBytes)}
+	if r.respType == RequestTypeGat || r.respType == RequestTypeGats {
+		slog.Cmd = []string{r.respType.String(), string(r.data), string(r.key), string(crlfBytes)}
 	} else {
-		slog.Cmd = []string{r.rTp.String(), string(r.key), string(r.data)}
+		slog.Cmd = []string{r.respType.String(), string(r.key), string(r.data)}
 	}
 	return slog
 }

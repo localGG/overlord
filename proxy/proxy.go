@@ -4,7 +4,6 @@ import (
 	errs "errors"
 	"net"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -66,6 +65,7 @@ func (p *Proxy) Serve(ccs []*ClusterConfig) {
 	p.forwarders = map[string]proto.Forwarder{}
 	p.lock.Unlock()
 	for _, cc := range ccs {
+		log.Infof("start to serve cluster[%s] with configs %v", cc.Name, *cc)
 		p.serve(cc)
 	}
 }
@@ -109,7 +109,7 @@ func (p *Proxy) accept(cc *ClusterConfig, l net.Listener, forwarder proto.Forwar
 				case types.CacheTypeMemcacheBinary:
 					encoder = mcbin.NewProxyConn(libnet.NewConn(conn, time.Second, time.Second))
 				case types.CacheTypeRedis:
-					encoder = redis.NewProxyConn(libnet.NewConn(conn, time.Second, time.Second))
+					encoder = redis.NewProxyConn(libnet.NewConn(conn, time.Second, time.Second), true)
 				case types.CacheTypeRedisCluster:
 					encoder = rclstr.NewProxyConn(libnet.NewConn(conn, time.Second, time.Second), nil)
 				}
@@ -169,6 +169,7 @@ func (p *Proxy) MonitorConfChange(ccf string) {
 		select {
 		case ev := <-watch.Events:
 			if ev.Op&fsnotify.Create == fsnotify.Create || ev.Op&fsnotify.Write == fsnotify.Write || ev.Op&fsnotify.Rename == fsnotify.Rename {
+				time.Sleep(time.Second)
 				newConfs, err := LoadClusterConf(p.ccf)
 				if err != nil {
 					prom.ErrIncr(p.ccf, p.ccf, "config reload", err.Error())
@@ -221,19 +222,41 @@ func (p *Proxy) updateConfig(conf *ClusterConfig) (err error) {
 }
 
 func parseChanged(newConfs, oldConfs []*ClusterConfig) (changed []*ClusterConfig) {
+
 	changed = make([]*ClusterConfig, 0, len(oldConfs))
+	for _, cf := range newConfs {
+		sort.Strings(cf.Servers)
+	}
+
+	for _, cf := range oldConfs {
+		sort.Strings(cf.Servers)
+	}
+
 	for _, newConf := range newConfs {
 		for _, oldConf := range oldConfs {
-			if newConf.Name != oldConf.Name || len(newConf.Servers) != len(oldConf.Servers) {
+			if newConf.Name != oldConf.Name {
 				continue
 			}
-			sort.Strings(newConf.Servers)
-			sort.Strings(oldConf.Servers)
-			if !reflect.DeepEqual(newConf.Servers, oldConf.Servers) {
+
+			if !deepEqualOrderedStringSlice(newConf.Servers, oldConf.Servers) {
 				changed = append(changed, newConf)
 			}
 			break
 		}
 	}
 	return
+}
+
+func deepEqualOrderedStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }

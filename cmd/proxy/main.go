@@ -14,23 +14,20 @@ import (
 	"overlord/pkg/prom"
 	"overlord/proxy"
 	"overlord/proxy/slowlog"
-)
-
-const (
-	// VERSION version
-	VERSION = "1.8.0"
+	"overlord/version"
 )
 
 var (
-	version         bool
-	check           bool
-	stat            string
-	metrics         bool
-	confFile        string
-	clusterConfFile string
-	reload          bool
-	slowlogFile     string
-	slowlogSlowerThan int
+	check              bool
+	stat               string
+	metrics            bool
+	confFile           string
+	clusterConfFile    string
+	reload             bool
+	slowlogFile        string
+	slowlogSlowerThan  int
+	slowlogMaxBytes    int
+	slowlogBackupCount int
 )
 
 type clustersFlag []string
@@ -52,7 +49,6 @@ var usage = func() {
 func init() {
 	flag.Usage = usage
 	flag.BoolVar(&check, "t", false, "conf file check")
-	flag.BoolVar(&version, "v", false, "print version.")
 	flag.StringVar(&stat, "stat", "", "stat listen addr. high priority than conf.stat.")
 	flag.BoolVar(&metrics, "metrics", false, "proxy support prometheus metrics and reuse stat port.")
 	flag.StringVar(&confFile, "conf", "", "conf file of proxy itself.")
@@ -60,14 +56,16 @@ func init() {
 	flag.BoolVar(&reload, "reload", false, "reloading the servers in cluster config file.")
 	flag.StringVar(&slowlogFile, "slowlog", "", "slowlog is the file where slowlog output")
 	flag.IntVar(&slowlogSlowerThan, "slower-than", 0, "slower-than is the microseconds which slowlog must slower than.")
+	flag.IntVar(&slowlogMaxBytes, "slower-max-bytes", 500000000, "slower-max-bytes is maximum size of slow log file.")
+	flag.IntVar(&slowlogBackupCount, "slower-backup-count", 7, "slower-backup-count is maximum backup count of slow log file.")
 }
 
 func main() {
 	flag.Parse()
-	if version {
-		fmt.Printf("overlord version %s\n", VERSION)
+	if version.ShowVersion() {
 		os.Exit(0)
 	}
+
 	if check {
 		parseConfig()
 		os.Exit(0)
@@ -77,7 +75,7 @@ func main() {
 		defer log.Close()
 	}
 	// init slowlog if need
-	err := slowlog.Init(slowlogFile)
+	err := slowlog.Init(slowlogFile, slowlogMaxBytes, slowlogBackupCount)
 	if err != nil {
 		log.Errorf("fail to init slowlog due %s", err)
 	}
@@ -101,7 +99,7 @@ func main() {
 			prom.On = false
 		}
 	}
-	prom.VersionState(VERSION)
+	prom.VersionState(version.Str())
 	// hanlde signal
 	signalHandler()
 }
@@ -143,12 +141,12 @@ func signalHandler() {
 	var ch = make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
 	for {
-		log.Infof("overlord proxy version[%s] start serving", VERSION)
+		log.Infof("overlord proxy version[%s] start serving", version.Str())
 		si := <-ch
-		log.Infof("overlord proxy version[%s] signal(%s) stop the process", VERSION, si.String())
+		log.Infof("overlord proxy version[%s] signal(%s) stop the process", version.Str(), si.String())
 		switch si {
 		case syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT:
-			log.Infof("overlord proxy version[%s] exited", VERSION)
+			log.Infof("overlord proxy version[%s] exited", version.Str())
 			return
 		case syscall.SIGHUP:
 		default:
